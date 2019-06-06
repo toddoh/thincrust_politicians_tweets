@@ -1,0 +1,12 @@
+Topic 0  interview  tonight     enjoy    look     foxnew    morning    great    foxandfriend  forward  watch     seanhannity  mike      good      source   oreillyfactor
+Topic 1  president  obama       fbi      hillary  jeb       bush       justice  campaign      court    comey     clinton      just      know      crooked  year
+Topic 2  news       fake        medium   bad      say       people     story    just          time     cnn       fail         make      hillary   report   really
+Topic 3  trump      america     great    make     donald    president  people   need          country  american  want         state     win       don      say
+Topic 4  great      new         today    honor    day       thank      poll     family        year     american  america      high      just      woman    record
+Topic 5  trade      deal        china    year     state     korea      country  north         make     just      united       good      dollar    hunt     tariff
+Topic 6  vote       republican  great    win      tax       big        cut      democrat      state    senator   senate       crime     military  party    endorsement
+Topic 7  border     job         country  wall     security  people     illegal  immigration   mexico   great     democrat     stop      come      law      build
+Topic 8  thank      trump       great    crowd    maga      night      rally    florida       love     join      tomorrow     vote      carolina  iowa     big
+Topic 9  hillary    debate      poll     trump    cruz      win        say      crooked       clinton  rubio     just         campaign  watch     use      pay
+-------  ---------  -
+["News Interviews/Fox", "Scandals/Investigations incl. Hillary email and Comey FBI", "Fake News mostly CNN", "Make America Great Again", "MAGA - Great polls and records", "Trade deal, Tarriffs and North Korea - IR", "Congress related incl. tax cut bills and endorsements", "Border/Immigration/Mexico Wall", "Trump rally", "Debates related"]
