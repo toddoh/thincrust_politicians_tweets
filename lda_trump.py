@@ -9,26 +9,21 @@ import unicodedata
 #for LDA
 import numpy as np
 import pandas as pd
-import re, nltk, spacy, gensim
-
-# Sklearn
-from sklearn.decomposition import LatentDirichletAllocation, TruncatedSVD
-from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
-from sklearn.model_selection import GridSearchCV
-from sklearn.feature_extraction import text 
+import re, nltk, spacy
+from nltk.corpus import stopwords
+import gensim
+import gensim.corpora as corpora
+from gensim.utils import simple_preprocess
+from gensim.models import CoherenceModel
 from pprint import pprint
+import matplotlib.pyplot as plt
+#python3 -m spacy download en
+nlp = spacy.load('en', disable=['parser', 'ner'])
 
-'''
-filepath_dict = {'trump':   './tweetdata/trump_06162015-06012019.csv',
-                 'warren': 'tweetdata/warren_01202015-06012019.csv',
-                 'sanders':   'tweetdata/sanders_05012009-06012019.csv'}
-'''
+filepath_dict = {'trump': './tweetdata/trump_06162015-06012019.csv'}
+print('Dough: Init r11-0612_2019-trump')
 
-filepath_dict = {'trump':   './tweetdata/trump_06162015-06012019.csv'}
-
-print('Dough: Init r02-0609_2019-Trump')
-
-def preprocess_tweets():
+def preprocess_tweets(startDate=None, endDate=None):
     for source, filepath in filepath_dict.items():
         tweets_source = source
         print('Dough: Reading tweets csv data from {0}...'.format(filepath))
@@ -70,6 +65,21 @@ def preprocess_tweets():
             data['tweet_hashtags'] = text_get_hashtags
             data['tweet_pic'] = twitter_pic_url_rmquotes
             dt_tweetdate = dateutil.parser.parse(line_convert_dict['date'])
+
+            if startDate is not None and endDate is not None:
+                dt_startDate = dateutil.parser.parse(startDate)
+                dt_endDate = dateutil.parser.parse(endDate)
+                if dt_tweetdate < dt_startDate or dt_tweetdate > dt_endDate:
+                    continue
+            elif startDate is not None:
+                dt_startDate = dateutil.parser.parse(startDate)
+                if dt_tweetdate < dt_startDate:
+                    continue
+            elif endDate is not None:
+                dt_endDate = dateutil.parser.parse(endDate)
+                if dt_tweetdate > dt_endDate:
+                    continue
+
             unixts_tweetdate = int(time.mktime(dt_tweetdate.timetuple()))
             data['timestamp'] = unixts_tweetdate
 
@@ -77,138 +87,138 @@ def preprocess_tweets():
             
         return source, pd.DataFrame(csv_dict)
 
+#define dataset for processing
+'''
+tweets_init = preprocess_tweets(None, '1/21/2017')
+tweets_type = '2017-2019'
+'''
+tweets_init = preprocess_tweets(None, '11/06/2016')
+tweets_type = '2015-2016election'
+
+#df from dataset
+tweets_df = tweets_init[1]
+tweets_source = tweets_init[0]
+
+#nltk stopwords
+stop_words = stopwords.words('english')
+stop_words.extend(['realdonaldtrump', 'trump', 'just', 'great', 'donald', 'live', 'thank', 'people', 'today', 'watch']) #custom per-type
+
 #gensim preprocess tokenization and cleaning
 def sent_to_words(sentences):
-    print('Dough: Tokenizing tweets dataframe...')
+    print('Dough: Tokenizing tweets in the dataframe...')
     for sentence in sentences:
         yield(gensim.utils.simple_preprocess(str(sentence), deacc=True))  # deacc=True removes punctuations
 
+tweets_tokenized = list(sent_to_words(tweets_df['tweet']))
+print('Dough: DONE Tokenizing tweets')
+
+# Build the bigram and trigram models
+print('Dough: Building bigram/trigram models...')
+bigram = gensim.models.Phrases(tweets_tokenized, min_count=5, threshold=100) # higher threshold fewer phrases.
+trigram = gensim.models.Phrases(bigram[tweets_tokenized], threshold=100)  
+bigram_mod = gensim.models.phrases.Phraser(bigram)
+trigram_mod = gensim.models.phrases.Phraser(trigram)
+
+def remove_stopwords(texts):
+    return [[word for word in simple_preprocess(str(doc)) if word not in stop_words] for doc in texts]
+
+def make_bigrams(texts):
+    return [bigram_mod[doc] for doc in texts]
+
+def make_trigrams(texts):
+    return [trigram_mod[bigram_mod[doc]] for doc in texts]
+
 #spacy lemmatization
 def lemmatization(texts, allowed_postags=['NOUN', 'ADJ', 'VERB', 'ADV']):
-    print('Dough: Lemmatizing tweets dataframe...')
+    print('Dough: Lemmatizing tweets in the dataframe...')
     texts_out = []
     for sent in texts:
         doc = nlp(" ".join(sent))
-        texts_out.append(" ".join([token.lemma_ if token.lemma_ not in ['-PRON-'] else '' for token in doc if token.pos_ in allowed_postags]))
+        texts_out.append([token.lemma_ if token.lemma_ not in ['-PRON-'] else '' for token in doc if token.pos_ in allowed_postags])
     return texts_out
 
-def token_lemmatize(df):
-    tweets_tokens = list(sent_to_words(tweets_df['tweet'].values.astype('U')))
+print('Dough: Pre-processing tokens...')
+tweets_tokenized_nostops = remove_stopwords(tweets_tokenized)
+tweets_tokenized_bigrams = make_bigrams(tweets_tokenized_nostops)
+tweets_lemmatized = lemmatization(tweets_tokenized_bigrams, allowed_postags=['NOUN', 'ADJ', 'VERB', 'ADV'])
 
-    #python3 -m spacy download en
-    nlp = spacy.load('en', disable=['parser', 'ner'])
-    tweets_lemmatized = lemmatization(tweets_tokens, allowed_postags=['NOUN', 'ADJ', 'VERB', 'ADV'])
-    return tweets_tokens, tweets_lemmatized
+print('Dough: Generating dictionary and corpus...')
+id2word = corpora.Dictionary(tweets_lemmatized)
+tweets_lemmatized_corpustexts = tweets_lemmatized
+tweets_lemmatized_corpustdf = [id2word.doc2bow(text) for text in tweets_lemmatized_corpustexts]
 
-def vectorizer(custom_stopwords, tweets_lemmatized):
-    #stopwords config and countvectorizer
-    stopwords_list = text.ENGLISH_STOP_WORDS.union(custom_stopwords)
+mallet_path = './mallet-2.0.8/bin/mallet' # update this path
+def compute_coherence_values(dictionary, corpus, texts, limit, start=2, step=3):
+    coherence_values = []
+    model_list = []
+    for num_topics in range(start, limit, step):
+        model = gensim.models.wrappers.LdaMallet(mallet_path, corpus=corpus, num_topics=num_topics, id2word=id2word)
+        model_list.append(model)
+        coherencemodel = CoherenceModel(model=model, texts=texts, dictionary=dictionary, coherence='c_v')
+        coherence_values.append(coherencemodel.get_coherence())
 
-    print('Dough: Creating Doc-Word matrix using CountVectorizer_fit/transform...')
-    vectorizer = CountVectorizer(analyzer='word',       
-                                min_df=20,                        # minimum reqd occurences of a word 
-                                stop_words=stopwords_list,             # remove stop words
-                                lowercase=True,                   # convert all words to lowercase
-                                token_pattern='[a-zA-Z0-9]{3,}',  # num chars > 3
-                                # max_features=50000,             # max number of uniq words
-                                )
+    return model_list, coherence_values
 
-    tweets_vectorized = vectorizer.fit_transform(tweets_lemmatized)
-    print('Dough: Processing the sparse data...')
-    data_dense = tweets_vectorized.todense()
+print('Dough: Calculating coherence values using mallet, could take a few minutes...')
+model_list, coherence_values = compute_coherence_values(dictionary=id2word, corpus=tweets_lemmatized_corpustdf, texts=tweets_lemmatized, start=5, limit=20, step=2)
 
-    #Sparsity = Percentage of Non-Zero cells
-    print("Dough: Data sparsity is ", ((data_dense > 0).sum()/data_dense.size)*100, "%")
-    return tweets_vectorized
+print('Dough: Displaying the graph')
+x = range(5, 20, 2)
+plt.plot(x, coherence_values)
+plt.xlabel("Num Topics")
+plt.ylabel("Coherence score")
+plt.legend(("coherence_values"), loc='best')
+plt.show()
 
+optimal_model_index = eval(input('Dough: Provide an optimal model index:  '))
+optimal_model = model_list[optimal_model_index]
+model_topics = optimal_model.show_topics(formatted=False)
+pprint(optimal_model.print_topics(num_words=10))
 
-#LDA Topic
-def find_topics_optimalldamodel(tweets_vectorized, optimal_lda_model):
-    print('Dough: Dataframe - topic keyword matrix')
-    lda_output = optimal_lda_model.transform(tweets_vectorized)
-    topicnames = ["Topic" + str(i) for i in range(optimal_lda_model.n_components)] # column names
-    docnames = ["Doc" + str(i) for i in range(len(data))] # index names
+def format_topics_sentences(ldamodel, corpus, texts):
+    sent_topics_df = pd.DataFrame()
 
-    df_topic_keywords = pd.DataFrame(optimal_lda_model.components_)
-    df_topic_keywords.columns = vectorizer.get_feature_names()
-    df_topic_keywords.index = topicnames
-    print(df_topic_keywords.head())
-    #df_topic_keywords.to_csv('./output/result_matrix_' + tweets_source + '-firstyear.csv', sep='\t', index=False)
-    #df_topic_keywords.to_json('./output/result_matrix_' + tweets_source + '-firstyear.json', orient='records')
+    # Get main topic in each document
+    for i, row in enumerate(ldamodel[corpus]):
+        row = sorted(row, key=lambda x: (x[1]), reverse=True)
+        # Get the Dominant topic, Perc Contribution and Keywords for each document
+        for j, (topic_num, prop_topic) in enumerate(row):
+            if j == 0:  # => dominant topic
+                wp = ldamodel.show_topic(topic_num)
+                topic_keywords = ", ".join([word for word, prop in wp])
+                sent_topics_df = sent_topics_df.append(pd.Series([int(topic_num), round(prop_topic,4), topic_keywords]), ignore_index=True)
+            else:
+                break
+    sent_topics_df.columns = ['dominant_topic_no', 'topic_contribution_percentage', 'topic_keyword']
 
-    print('Dough: Finding top 15 topics...')# Show top n keywords for each topic
-    def show_topics(vectorizer=vectorizer, lda_model=optimal_lda_model, n_words=20):
-        keywords = np.array(vectorizer.get_feature_names())
-        topic_keywords = []
-        for topic_weights in lda_model.components_:
-            top_keyword_locs = (-topic_weights).argsort()[:n_words]
-            topic_keywords.append(keywords.take(top_keyword_locs))
-        return topic_keywords
-        
-    topic_keywords = show_topics(vectorizer=vectorizer, lda_model=optimal_lda_model, n_words=15)
+    # Add original text to the end of the output
+    sent_topics_df = pd.concat([sent_topics_df, texts], axis=1)
+    return(sent_topics_df)
 
-    print('Dough: Generating dataframe - top 15 topics')
-    df_topic_keywords = pd.DataFrame(topic_keywords)
-    df_topic_keywords.columns = ['Word '+str(i) for i in range(df_topic_keywords.shape[1])]
-    df_topic_keywords.index = ['Topic '+str(i) for i in range(df_topic_keywords.shape[0])]
-    print(tabulate(df_topic_keywords))
+print('Dough: Generating full dataset with topic keywords')
+df_topic_sents_keywords = format_topics_sentences(ldamodel=optimal_model, corpus=tweets_lemmatized_corpustdf, texts=tweets_df)
+df_dominant_topic = df_topic_sents_keywords.reset_index()
+#df_dominant_topic.columns = ['doc_no', 'dominant_topic_no', 'topic_contribution_percentage', 'topic_keyword', 'tweet']
 
-    topics_input = input('Dough: Provide topics for the list: ')
-    df_topic_keywords["topics"] = eval(topics_input)
-    print(tabulate(df_topic_keywords))
-    tweets_df['topic_cluster'] = lda_output.argmax(axis=1)  
+print(df_dominant_topic.head(10))
+df_dominant_topic.to_csv('./output/trump/result_lda_full_' + tweets_source + '-' + tweets_type + '.csv', sep='\t', index=False)
+df_dominant_topic.to_json('./output/trump/result_lda_full_' + tweets_source + '-' + tweets_type + '.json', orient='records')
+print('Dough: Saved full dataset with topic data in ', ' ./output/trump/result_lda_full_' + tweets_source + '-' + tweets_type + '.csv')
 
-    print('Dough: Adding provided topics to the dataframe...')
-    topic_cluster_keyword = []
-    for x in tweets_df['topic_cluster'].tolist():
-        topic_cluster_keyword.append(df_topic_keywords["topics"][x])
+# Group top 5 sentences under each topic
+print('Dough: Generating top 10 documents dataset in each topic...')
+sent_topics_sorteddf_mallet = pd.DataFrame()
+sent_topics_outdf_grpd = df_topic_sents_keywords.groupby('dominant_topic_no')
 
-    print('Dough: Generating final result files...')
-    tweets_df['topic_keywords'] = topic_cluster_keyword
-    print(tweets_df.head())
-    tweets_df.to_csv('./output/result_topic_cluster_' + tweets_source + '-firstyear.csv', sep='\t', index=False)
-    tweets_df.to_json('./output/result_topic_cluster_' + tweets_source + '-firstyear.json', orient='records')
+for i, grp in sent_topics_outdf_grpd:
+    sent_topics_sorteddf_mallet = pd.concat([sent_topics_sorteddf_mallet, 
+                                             grp.sort_values(['topic_contribution_percentage'], ascending=[0]).head(10)], 
+                                            axis=0)
 
+sent_topics_sorteddf_mallet.reset_index(drop=True, inplace=True)
+#sent_topics_sorteddf_mallet.columns = ['topic_no', "topic_contribution_percentage", "topic_keyword", "tweet"]
 
-
-
-tweets_df = preprocess_tweets()[1]
-tweets_source = preprocess_tweets()[0]
-tweets_lemmatized = token_lemmatize(tweets_df)[1]
-
-tweets_vectorized = vectorizer(['realdonaldtrump', 'trump', 'just', 'great', 'donald', 'live'], tweets_lemmatized)
-
-#LDA modeling - GridSearch to find optimal n_components
-search_params = {'n_components': [5, 8, 10, 13, 15, 20, 25], 'learning_decay': [.7, .9]}
-print('Dough: Finding optimal model configuration using GridSearchCV...')
-print('Dough: This will take up a few minutes...')
-lda = LatentDirichletAllocation(n_jobs= -1)
-model = GridSearchCV(lda, param_grid=search_params)
-model.fit(tweets_vectorized)
-
-optimal_lda_model = model.best_estimator_
-print("Optimal model parameters: ", model.best_params_)
-#Log Likelyhood: Higher the better, Perplexity: Lower the better. Perplexity = exp(-1. * log-likelihood per word)
-print("Optimal model log Likelihood Score: ", model.best_score_)
-print("Optimal model Perplexity: ", optimal_lda_model.perplexity(tweets_vectorized))
-
-
-
-
-'''
-print('Dough: LDA Modeling...')
-lda_model = LatentDirichletAllocation(n_components=10,               # Number of topics
-                                      max_iter=10,               # Max learning iterations
-                                      learning_method='online',   
-                                      random_state=100,          # Random state
-                                      batch_size=128,            # n docs in each learning iter
-                                      evaluate_every = -1,       # compute perplexity every n iters, default: Don't
-                                      n_jobs = -1,               # Use all available CPUs
-                                     )
-lda_output = lda_model.fit_transform(tweets_vectorized)
-print('Dough: LDA Model - {0}'.format(lda_model)) 
-
-#Log Likelyhood: Higher the better, Perplexity: Lower the better. Perplexity = exp(-1. * log-likelihood per word)
-print("Dough: LDA Model Log Likelihood: ", lda_model.score(tweets_vectorized))
-print("Dough: LDA Model Perplexity: ", lda_model.perplexity(tweets_vectorized))
-'''
+print(sent_topics_sorteddf_mallet.head())
+sent_topics_sorteddf_mallet.to_csv('./output/trump/result_lda_top_' + tweets_source + '-' + tweets_type + '.csv', sep='\t', index=False)
+sent_topics_sorteddf_mallet.to_json('./output/trump/result_lda_top_' + tweets_source + '-' + tweets_type + '.json', orient='records')
+print('Dough: Saved top 10 document dataset in ', ' ./output/trump/result_lda_top_' + tweets_source + '-' + tweets_type + '.csv')
